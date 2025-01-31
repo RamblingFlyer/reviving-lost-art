@@ -1,82 +1,81 @@
 import sys
-print(sys.executable)
 import tensorflow as tf
+import tensorflow_hub as hub
 import cv2
 import os
 import numpy as np
-from moviepy.editor import VideoFileClip
 from tqdm import tqdm
 
-def apply_style_to_video(video_path, style_image_path, output_path, model_path, num_frames=None):
-    """
-    Applies style transfer to a specified number of frames of a video.
+# Load TensorFlow Hub model for Neural Style Transfer
+style_transfer_model = hub.load("https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2")
 
-    Parameters:
-    - video_path: Path to the input video.
-    - style_image_path: Path to the style image.
-    - output_path: Path to save the stylized video.
-    - model_path: Path to the saved model.
-    - num_frames: Number of frames to process (None for all frames).
-    """
-    # Load the pre-trained style transfer model
-    model = tf.saved_model.load(model_path)
+# Function to preprocess an image for NST model
+def preprocess_image(image, target_dim=(256, 256)):
+    image = tf.image.convert_image_dtype(image, tf.float32)
+    image = tf.image.resize(image, target_dim)
+    image = image[tf.newaxis, :]
+    return image
 
-    # Load and preprocess the style image
-    def load_image(image_path):
-        img = tf.io.read_file(image_path)
-        img = tf.image.decode_image(img, channels=3)
-        img = tf.image.convert_image_dtype(img, tf.float32)
-        img = tf.image.resize(img, (256, 256))
-        img = img[tf.newaxis, :]
-        return img
-
-    style_image = load_image(style_image_path)
+# Function to apply style transfer to a video
+def apply_style_to_video(video_path, style_image_path, output_path, num_frames=None):
+    # Load and preprocess style image
+    style_image = tf.io.read_file(style_image_path)
+    style_image = tf.image.decode_image(style_image, channels=3)
+    style_image = preprocess_image(style_image)
 
     # Open the video
     video = cv2.VideoCapture(video_path)
+    if not video.isOpened():
+        raise ValueError("Could not open video file")
+
+    # Get video properties
     total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = int(video.get(cv2.CAP_PROP_FPS))
     width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Limit the number of frames to process if num_frames is specified
     frames_to_process = min(num_frames, total_frames) if num_frames else total_frames
 
-    # Prepare output video writer
+    # Initialize video writer
+    if not os.path.exists(os.path.dirname(output_path)):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     print(f"Processing {frames_to_process}/{total_frames} frames...")
 
-    for frame_idx in tqdm(range(frames_to_process)):
-        ret, frame = video.read()
-        if not ret:
-            break
+    try:
+        for frame_idx in tqdm(range(frames_to_process)):
+            ret, frame = video.read()
+            if not ret:
+                break
 
-        # Preprocess the content frame
-        content_image = tf.convert_to_tensor(frame, dtype=tf.float32)
-        content_image = tf.image.resize(content_image, (256, 256))
-        content_image = content_image[tf.newaxis, :]
+            # Convert frame to tensor
+            content_image = tf.convert_to_tensor(frame, dtype=tf.float32)
+            content_image = preprocess_image(content_image)
 
-        # Apply style transfer
-        stylized_image = model(tf.constant(content_image), tf.constant(style_image))[0]
+            # Apply style transfer
+            stylized_image = style_transfer_model(content_image, style_image)[0]
 
-        # Postprocess and save the frame
-        stylized_image = tf.image.resize(stylized_image, (height, width))
-        stylized_frame = tf.cast(stylized_image * 255, tf.uint8).numpy()
-        out.write(cv2.cvtColor(stylized_frame, cv2.COLOR_RGB2BGR))
+            # Convert back to NumPy
+            stylized_image = tf.image.resize(stylized_image, (height, width))
+            stylized_frame = tf.cast(stylized_image * 255, tf.uint8).numpy()[0]
 
-    # Release resources
-    video.release()
-    out.release()
-    print(f"Stylized video saved to: {output_path}")
-video_path = r"C:\Users\ratna\Videos\DemoVideo.mp4"
-style_image_path = r"C:\Users\ratna\Lostart\starry-night.jpg"
-output_path = "output_video.mp4"
-video = VideoFileClip(video_path)
-video.write_videofile(output_path, codec='libx264',audio=False)
-print(f"Video saved to {output_path}")
-model_path = r"C:\Users\ratna\Lostart\arbitrary-image-stylization-v1-tensorflow1-256-v2"
-num_frames = 10  # Process only the first 100 frames
+            # Save to video
+            out.write(cv2.cvtColor(stylized_frame, cv2.COLOR_RGB2BGR))
 
-apply_style_to_video(video_path, style_image_path, output_path, model_path, num_frames=num_frames)
+    finally:
+        video.release()
+        out.release()
+        print(f"Stylized video saved to: {output_path}")
+
+# Main function
+if __name__ == "__main__":
+    video_path = input("Enter the path to the video file: ")
+    style_image_path = input("Enter the path to the style image: ")
+    output_path = input("Enter the path for the output video (default: output.mp4): ") or "output.mp4"
+    num_frames = input("Enter number of frames to process (optional, press Enter for all frames): ")
+    num_frames = int(num_frames) if num_frames else None
+
+    apply_style_to_video(video_path, style_image_path, output_path, num_frames)
